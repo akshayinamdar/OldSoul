@@ -163,8 +163,7 @@ bool ProcessExistingPositions()
                 double profitPips = GetProfitInPips();
                 
                 bool shouldClose = false;
-                
-                if(ExitMode) // Exit on profit
+                  if(ExitMode) // Exit on profit
                 {
                     if(profit > 0 && profitPips >= MinProfitLossPips)
                         shouldClose = true;
@@ -178,6 +177,10 @@ bool ProcessExistingPositions()
                     else if(profit < 0 && MathAbs(profitPips) < MinProfitLossPips)
                         canTakeNewPosition = false; // Skip new position
                 }
+                
+                // Additional condition: prevent new positions when profit is negative and small
+                if(profit < 0 && MathAbs(profitPips) < MinProfitLossPips)
+                    canTakeNewPosition = false;
                 
                 if(shouldClose)
                 {
