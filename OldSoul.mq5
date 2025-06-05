@@ -10,12 +10,12 @@
 #include <Trade\Trade.mqh>
 
 //--- Input parameters
-input string    StartTime = "08:00";           // Daily trading start time (HH:MM)
-input string    EndTime = "17:00";             // Daily trading end time (HH:MM)
+input string    StartTime = "06:00";           // Daily trading start time (HH:MM)
+input string    EndTime = "18:00";             // Daily trading end time (HH:MM)
 input int       Interval = 15;                 // Market check frequency in minutes
-input double    PositionSize = 0.1;            // Fixed lot size
+input double    PositionSize = 0.01;            // Fixed lot size
 input bool      ExitMode = true;               // Exit mode (true = exit on profit, false = exit on loss)
-input int       MinProfitLossPips = 10;        // Minimum profit/loss pips threshold
+input int       MinProfitLossPips = 6;        // Minimum profit/loss pips threshold
 
 //--- Global variables
 CTrade trade;
