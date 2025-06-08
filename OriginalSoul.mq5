@@ -25,6 +25,46 @@ datetime lastTradeDate = 0;                   // Last date when trades were gene
 int startHour, startMinute, endHour, endMinute;
 
 //+------------------------------------------------------------------+
+//| Send push notification                                           |
+//+------------------------------------------------------------------+
+bool SendPushAlert(string message)
+{
+    if(!SendNotification(message))
+    {
+        Print("Error sending push notification: ", GetLastError());
+        return false;
+    }
+    
+    Print("Push notification sent successfully");
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Send formatted trade notification                                |
+//+------------------------------------------------------------------+
+void SendTradeNotification(string direction, double lots, double price, double sl, double tp)
+{
+    string message = Symbol() + ": New " + direction + " @ " +
+                    DoubleToString(price, Digits()) + " | " +
+                    DoubleToString(lots, 2) + " lots | " +
+                    "SL: " + DoubleToString(sl, Digits()) + " | " +
+                    "TP: " + DoubleToString(tp, Digits());
+    
+    SendPushAlert(message);
+}
+
+//+------------------------------------------------------------------+
+//| Send daily schedule notification                                 |
+//+------------------------------------------------------------------+
+void SendScheduleNotification(int trades, datetime date)
+{
+    string message = Symbol() + ": " + IntegerToString(trades) + 
+                    " trades scheduled for " + TimeToString(date, TIME_DATE);
+    
+    SendPushAlert(message);
+}
+
+//+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -71,13 +111,19 @@ int OnInit()
     }
     
     // Resize the trading times array
-    ArrayResize(tradingTimes, DailyTrades);
-      Print("RandomTimerEA initialized successfully");
+    ArrayResize(tradingTimes, DailyTrades);    Print("RandomTimerEA initialized successfully");
     Print("Trading hours: ", StartTime, " - ", EndTime);
     Print("Daily trades: ", DailyTrades);
     Print("Position size: ", PositionSize, " lots");
     Print("Stop Loss: ", StopLossPoints, " points");
     Print("Take Profit: ", TakeProfitPoints, " points");
+    
+    // Send initialization notification
+    string initMessage = Symbol() + " RandomTimerEA initialized | " +
+                        "Hours: " + StartTime + "-" + EndTime + " | " +
+                        IntegerToString(DailyTrades) + " trades/day | " +
+                        DoubleToString(PositionSize, 2) + " lots";
+    SendPushAlert(initMessage);
     
     return INIT_SUCCEEDED;
 }
@@ -182,12 +228,14 @@ void GenerateDailyTradingTimes()
         
         // Sort the trading times
         ArraySort(tradingTimes);
-        
-        Print("Generated ", DailyTrades, " random trading times for ", TimeToString(currentDate, TIME_DATE));
+          Print("Generated ", DailyTrades, " random trading times for ", TimeToString(currentDate, TIME_DATE));
         for(int i = 0; i < DailyTrades; i++)
         {
             Print("Trade ", i+1, " scheduled at: ", TimeToString(tradingTimes[i], TIME_MINUTES));
         }
+        
+        // Send schedule notification
+        SendScheduleNotification(DailyTrades, currentDate);
     }
 }
 
@@ -209,11 +257,16 @@ void CheckAndExecuteTrade()
         {
             TakeNewPosition();
             currentTradeIndex++;
-        }
-        else
+        }        else
         {
             // Skip this trade if outside trading hours and move to next
             Print("Skipping trade outside trading hours at: ", TimeToString(currentTime));
+            
+            // Send skip notification
+            string skipMessage = Symbol() + ": Trade skipped (outside hours) at " + 
+                               TimeToString(currentTime, TIME_MINUTES);
+            SendPushAlert(skipMessage);
+            
             currentTradeIndex++;
         }
     }
@@ -272,8 +325,7 @@ void TakeNewPosition()
     // Normalize prices
     stopLoss = NormalizeDouble(stopLoss, Digits());
     takeProfit = NormalizeDouble(takeProfit, Digits());
-    
-    if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, stopLoss, takeProfit, 
+      if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, stopLoss, takeProfit, 
                          "RandomTimer_" + TimeToString(TimeCurrent())))
     {
         Print("New ", (isBuy ? "BUY" : "SELL"), " position opened: ",
@@ -281,10 +333,18 @@ void TakeNewPosition()
               ", Price: ", DoubleToString(price, Digits()),
               ", SL: ", DoubleToString(stopLoss, Digits()),
               ", TP: ", DoubleToString(takeProfit, Digits()));
+              
+        // Send trade notification
+        SendTradeNotification((isBuy ? "BUY" : "SELL"), PositionSize, price, stopLoss, takeProfit);
     }
     else
     {
         Print("Failed to open position. Error: ", trade.ResultRetcode());
+        
+        // Send error notification
+        string errorMessage = Symbol() + ": Failed to open position. Error: " + 
+                             IntegerToString(trade.ResultRetcode());
+        SendPushAlert(errorMessage);
     }
 }
 
