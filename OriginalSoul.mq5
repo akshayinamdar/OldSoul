@@ -139,10 +139,9 @@ void GenerateDailyTradingTimes()
         // Generate random times within the trading window
         int usedTimes[];
         ArrayResize(usedTimes, DailyTrades);
-        
-        for(int i = 0; i < DailyTrades; i++)
+          for(int i = 0; i < DailyTrades; i++)
         {
-            int randomMinute;
+            int randomMinute = 0;  // Initialize the variable
             bool isUnique = false;
             
             // Ensure unique times
