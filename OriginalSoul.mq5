@@ -12,10 +12,10 @@
 //--- Input parameters
 input string    StartTime = "06:00";           // Daily trading start time (HH:MM)
 input string    EndTime = "18:00";             // Daily trading end time (HH:MM)
-input int       DailyTrades = 5;              // Number of trades per day
+input int       DailyTrades = 3;              // Number of trades per day
 input double    PositionSize = 0.01;          // Fixed lot size
-input int       StopLossPoints = 20;          // Stop loss in points
-input int       TakeProfitPoints = 30;        // Take profit in points
+input int       StopLossPoints = 150;          // Stop loss in points
+input int       TakeProfitPoints = 24;        // Take profit in points
 
 //--- Global variables
 CTrade trade;
