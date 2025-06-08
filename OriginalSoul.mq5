@@ -14,7 +14,8 @@ input string    StartTime = "06:00";           // Daily trading start time (HH:M
 input string    EndTime = "18:00";             // Daily trading end time (HH:MM)
 input int       DailyTrades = 3;              // Number of trades per day
 input double    PositionSize = 0.01;          // Fixed lot size
-input int       StopLossPoints = 150;          // Stop loss in points
+input int       RangePeriodMinutes = 24;      // Period in minutes to calculate range
+input double    RangeMultiplier = 1.5;        // Multiplier for range-based stop loss
 input int       TakeProfitPoints = 24;        // Take profit in points
 
 //--- Global variables
@@ -54,6 +55,21 @@ void SendTradeNotification(string direction, double lots, double price, double s
 }
 
 //+------------------------------------------------------------------+
+//| Send formatted trade notification with dynamic SL info          |
+//+------------------------------------------------------------------+
+void SendTradeNotificationWithRange(string direction, double lots, double price, double sl, double tp, double range)
+{
+    string message = Symbol() + ": New " + direction + " @ " +
+                    DoubleToString(price, Digits()) + " | " +
+                    DoubleToString(lots, 2) + " lots | " +
+                    "SL: " + DoubleToString(sl, Digits()) + " | " +
+                    "TP: " + DoubleToString(tp, Digits()) + " | " +
+                    "Range: " + DoubleToString(range, Digits());
+    
+    SendPushAlert(message);
+}
+
+//+------------------------------------------------------------------+
 //| Send daily schedule notification                                 |
 //+------------------------------------------------------------------+
 void SendScheduleNotification(int trades, datetime date)
@@ -83,15 +99,21 @@ int OnInit()
         Print("Error: Daily trades must be between 1 and 100");
         return INIT_PARAMETERS_INCORRECT;
     }
-    
-    if(PositionSize <= 0)
+      if(PositionSize <= 0)
     {
         Print("Error: Position size must be greater than 0");
         return INIT_PARAMETERS_INCORRECT;
     }
-      if(StopLossPoints <= 0)
+    
+    if(RangePeriodMinutes <= 0)
     {
-        Print("Error: Stop loss points must be greater than 0");
+        Print("Error: Range period minutes must be greater than 0");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+    
+    if(RangeMultiplier <= 0)
+    {
+        Print("Error: Range multiplier must be greater than 0");
         return INIT_PARAMETERS_INCORRECT;
     }
     
@@ -115,14 +137,17 @@ int OnInit()
     Print("Trading hours: ", StartTime, " - ", EndTime);
     Print("Daily trades: ", DailyTrades);
     Print("Position size: ", PositionSize, " lots");
-    Print("Stop Loss: ", StopLossPoints, " points");
+    Print("Range period: ", RangePeriodMinutes, " minutes");
+    Print("Range multiplier: ", RangeMultiplier);
     Print("Take Profit: ", TakeProfitPoints, " points");
     
     // Send initialization notification
     string initMessage = Symbol() + " RandomTimerEA initialized | " +
                         "Hours: " + StartTime + "-" + EndTime + " | " +
                         IntegerToString(DailyTrades) + " trades/day | " +
-                        DoubleToString(PositionSize, 2) + " lots";
+                        DoubleToString(PositionSize, 2) + " lots | " +
+                        "Range: " + IntegerToString(RangePeriodMinutes) + "min x" + 
+                        DoubleToString(RangeMultiplier, 1);
     SendPushAlert(initMessage);
     
     return INIT_SUCCEEDED;
@@ -304,38 +329,42 @@ void TakeNewPosition()
     
     double price = isBuy ? SymbolInfoDouble(Symbol(), SYMBOL_ASK) : 
                           SymbolInfoDouble(Symbol(), SYMBOL_BID);
-      ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+    ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
     
-    // Calculate SL and TP prices using points
+    // Calculate dynamic stop loss based on recent range
+    double stopLoss = CalculateDynamicStopLoss(isBuy, price);
+    
+    // Calculate TP prices using points
     double pointValue = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-    
-    double stopLoss = 0, takeProfit = 0;
+    double takeProfit = 0;
     
     if(isBuy)
     {
-        stopLoss = price - (StopLossPoints * pointValue);
         takeProfit = price + (TakeProfitPoints * pointValue);
     }
     else
     {
-        stopLoss = price + (StopLossPoints * pointValue);
         takeProfit = price - (TakeProfitPoints * pointValue);
     }
     
     // Normalize prices
-    stopLoss = NormalizeDouble(stopLoss, Digits());
     takeProfit = NormalizeDouble(takeProfit, Digits());
-      if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, stopLoss, takeProfit, 
+    
+    // Calculate the range used for SL calculation (for notification)
+    double rangeUsed = MathAbs(price - stopLoss) / RangeMultiplier;
+    
+    if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, stopLoss, takeProfit, 
                          "RandomTimer_" + TimeToString(TimeCurrent())))
     {
         Print("New ", (isBuy ? "BUY" : "SELL"), " position opened: ",
               "Size: ", PositionSize, 
               ", Price: ", DoubleToString(price, Digits()),
               ", SL: ", DoubleToString(stopLoss, Digits()),
-              ", TP: ", DoubleToString(takeProfit, Digits()));
+              ", TP: ", DoubleToString(takeProfit, Digits()),
+              ", Range: ", DoubleToString(rangeUsed, Digits()));
               
-        // Send trade notification
-        SendTradeNotification((isBuy ? "BUY" : "SELL"), PositionSize, price, stopLoss, takeProfit);
+        // Send trade notification with range info
+        SendTradeNotificationWithRange((isBuy ? "BUY" : "SELL"), PositionSize, price, stopLoss, takeProfit, rangeUsed);
     }
     else
     {
@@ -346,6 +375,68 @@ void TakeNewPosition()
                              IntegerToString(trade.ResultRetcode());
         SendPushAlert(errorMessage);
     }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate dynamic stop loss based on recent price range         |
+//+------------------------------------------------------------------+
+double CalculateDynamicStopLoss(bool isBuy, double entryPrice)
+{
+    // Get M1 data for the last X minutes
+    MqlRates rates[];
+    int copied = CopyRates(Symbol(), PERIOD_M1, 0, RangePeriodMinutes, rates);
+    
+    if(copied < RangePeriodMinutes)
+    {
+        Print("Warning: Not enough historical data for range calculation. Using minimum range.");
+        // Fallback to a minimum range if not enough data
+        double minRange = 20 * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+        if(SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 5 || 
+           SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 3)
+            minRange *= 10; // Adjust for 5-digit brokers
+        
+        return isBuy ? entryPrice - (minRange * RangeMultiplier) : 
+                      entryPrice + (minRange * RangeMultiplier);
+    }
+    
+    // Find the highest high and lowest low in the period
+    double highestHigh = rates[0].high;
+    double lowestLow = rates[0].low;
+    
+    for(int i = 1; i < copied; i++)
+    {
+        if(rates[i].high > highestHigh)
+            highestHigh = rates[i].high;
+        if(rates[i].low < lowestLow)
+            lowestLow = rates[i].low;
+    }
+      // Calculate the range
+    double range = highestHigh - lowestLow;
+    
+    // Apply multiplier to the range
+    double stopDistance = range * RangeMultiplier;
+    
+    // Print range and stop distance information
+    Print("Range calculation - Period: ", RangePeriodMinutes, " minutes, ",
+          "High: ", DoubleToString(highestHigh, Digits()), 
+          ", Low: ", DoubleToString(lowestLow, Digits()),
+          ", Range: ", DoubleToString(range, Digits()),
+          ", Multiplier: ", RangeMultiplier,
+          ", Stop Distance: ", DoubleToString(stopDistance, Digits()));
+    
+    // Calculate stop loss price
+    double stopLoss;
+    if(isBuy)
+        stopLoss = entryPrice - stopDistance;
+    else
+        stopLoss = entryPrice + stopDistance;
+    
+    Print("Stop Loss calculated - Entry: ", DoubleToString(entryPrice, Digits()),
+          ", Direction: ", (isBuy ? "BUY" : "SELL"),
+          ", Stop Loss: ", DoubleToString(stopLoss, Digits()));
+    
+    // Normalize and return
+    return NormalizeDouble(stopLoss, Digits());
 }
 
 //+------------------------------------------------------------------+
