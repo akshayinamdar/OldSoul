@@ -9,14 +9,32 @@
 
 #include <Trade\Trade.mqh>
 
+// Stop loss mode enumeration
+enum ENUM_STOPLOSS_MODE
+{
+    SL_DYNAMIC = 0,      // Dynamic stop loss based on range
+    SL_FIXED = 1         // Fixed stop loss in points
+};
+
+// Trade direction enumeration
+enum ENUM_TRADE_DIRECTION
+{
+    TRADE_RANDOM = 0,    // Random direction (50/50)
+    TRADE_BUY_ONLY = 1,  // Buy only
+    TRADE_SELL_ONLY = 2  // Sell only
+};
+
 //--- Input parameters
 input string    StartTime = "06:00";           // Daily trading start time (HH:MM)
 input string    EndTime = "18:00";             // Daily trading end time (HH:MM)
 input int       DailyTrades = 3;              // Number of trades per day
 input double    PositionSize = 0.01;          // Fixed lot size
-input int       RangePeriodMinutes = 24;      // Period in minutes to calculate range
-input double    RangeMultiplier = 1.5;        // Multiplier for range-based stop loss
+input ENUM_STOPLOSS_MODE StopLossMode = SL_DYNAMIC; // Stop loss calculation mode
+input int       FixedStopLossPoints = 20;     // Fixed stop loss in points (used when mode is Fixed)
+input int       RangePeriodMinutes = 24;      // Period in minutes to calculate range (for dynamic SL)
+input double    RangeMultiplier = 1.5;        // Multiplier for range-based stop loss (for dynamic SL)
 input int       TakeProfitPoints = 24;        // Take profit in points
+input ENUM_TRADE_DIRECTION TradeDirection = TRADE_RANDOM; // Trade direction mode
 
 //--- Global variables
 CTrade trade;
@@ -65,6 +83,21 @@ void SendTradeNotificationWithRange(string direction, double lots, double price,
                     "SL: " + DoubleToString(sl, Digits()) + " | " +
                     "TP: " + DoubleToString(tp, Digits()) + " | " +
                     "Range: " + DoubleToString(range, Digits());
+    
+    SendPushAlert(message);
+}
+
+//+------------------------------------------------------------------+
+//| Send formatted trade notification with stop loss mode info     |
+//+------------------------------------------------------------------+
+void SendTradeNotificationWithSL(string direction, double lots, double price, double sl, double tp, string slMode, double slDistance)
+{
+    string message = Symbol() + ": New " + direction + " @ " +
+                    DoubleToString(price, Digits()) + " | " +
+                    DoubleToString(lots, 2) + " lots | " +
+                    "SL: " + DoubleToString(sl, Digits()) + " (" + slMode + ") | " +
+                    "TP: " + DoubleToString(tp, Digits()) + " | " +
+                    "Distance: " + DoubleToString(slDistance, Digits());
     
     SendPushAlert(message);
 }
@@ -140,14 +173,19 @@ int OnInit()
     Print("Range period: ", RangePeriodMinutes, " minutes");
     Print("Range multiplier: ", RangeMultiplier);
     Print("Take Profit: ", TakeProfitPoints, " points");
+    Print("Trade direction: ", (TradeDirection == TRADE_RANDOM ? "Random" : 
+                                TradeDirection == TRADE_BUY_ONLY ? "Buy Only" : "Sell Only"));
     
     // Send initialization notification
+    string directionText = (TradeDirection == TRADE_RANDOM ? "Random" : 
+                           TradeDirection == TRADE_BUY_ONLY ? "BuyOnly" : "SellOnly");
     string initMessage = Symbol() + " RandomTimerEA initialized | " +
                         "Hours: " + StartTime + "-" + EndTime + " | " +
                         IntegerToString(DailyTrades) + " trades/day | " +
                         DoubleToString(PositionSize, 2) + " lots | " +
                         "Range: " + IntegerToString(RangePeriodMinutes) + "min x" + 
-                        DoubleToString(RangeMultiplier, 1);
+                        DoubleToString(RangeMultiplier, 1) + " | " +
+                        "Direction: " + directionText;
     SendPushAlert(initMessage);
     
     return INIT_SUCCEEDED;
@@ -321,18 +359,18 @@ bool IsWithinTradingHours()
 }
 
 //+------------------------------------------------------------------+
-//| Take new random direction position                               |
+//| Take new position with configurable direction                   |
 //+------------------------------------------------------------------+
 void TakeNewPosition()
 {
-    bool isBuy = (MathRand() % 2 == 0);
+    bool isBuy = DetermineTradeDirection();
     
     double price = isBuy ? SymbolInfoDouble(Symbol(), SYMBOL_ASK) : 
                           SymbolInfoDouble(Symbol(), SYMBOL_BID);
     ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
     
     // Calculate dynamic stop loss based on recent range
-    double stopLoss = CalculateDynamicStopLoss(isBuy, price);
+    double stopLoss = CalculateStopLoss(isBuy, price);
     
     // Calculate TP prices using points
     double pointValue = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
@@ -346,12 +384,12 @@ void TakeNewPosition()
     {
         takeProfit = price - (TakeProfitPoints * pointValue);
     }
-    
-    // Normalize prices
+      // Normalize prices
     takeProfit = NormalizeDouble(takeProfit, Digits());
     
-    // Calculate the range used for SL calculation (for notification)
-    double rangeUsed = MathAbs(price - stopLoss) / RangeMultiplier;
+    // Calculate information for notification based on stop loss mode
+    double slDistance = MathAbs(price - stopLoss);
+    string slModeStr = (StopLossMode == SL_FIXED) ? "Fixed" : "Dynamic";
     
     if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, stopLoss, takeProfit, 
                          "RandomTimer_" + TimeToString(TimeCurrent())))
@@ -361,10 +399,11 @@ void TakeNewPosition()
               ", Price: ", DoubleToString(price, Digits()),
               ", SL: ", DoubleToString(stopLoss, Digits()),
               ", TP: ", DoubleToString(takeProfit, Digits()),
-              ", Range: ", DoubleToString(rangeUsed, Digits()));
+              ", SL Mode: ", slModeStr,
+              ", SL Distance: ", DoubleToString(slDistance, Digits()));
               
-        // Send trade notification with range info
-        SendTradeNotificationWithRange((isBuy ? "BUY" : "SELL"), PositionSize, price, stopLoss, takeProfit, rangeUsed);
+        // Send trade notification with stop loss info
+        SendTradeNotificationWithSL((isBuy ? "BUY" : "SELL"), PositionSize, price, stopLoss, takeProfit, slModeStr, slDistance);
     }
     else
     {
@@ -374,6 +413,40 @@ void TakeNewPosition()
         string errorMessage = Symbol() + ": Failed to open position. Error: " + 
                              IntegerToString(trade.ResultRetcode());
         SendPushAlert(errorMessage);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate stop loss based on selected mode                      |
+//+------------------------------------------------------------------+
+double CalculateStopLoss(bool isBuy, double entryPrice)
+{
+    if(StopLossMode == SL_FIXED)
+    {
+        double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+        double stopDistance = FixedStopLossPoints * point;
+        
+        // Adjust for 5-digit brokers
+        if(SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 5 || 
+           SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 3)
+            stopDistance *= 10;
+            
+        double stopLoss;
+        if(isBuy)
+            stopLoss = entryPrice - stopDistance;
+        else
+            stopLoss = entryPrice + stopDistance;
+            
+        Print("Fixed Stop Loss - Entry: ", DoubleToString(entryPrice, Digits()),
+              ", Direction: ", (isBuy ? "BUY" : "SELL"),
+              ", Points: ", FixedStopLossPoints,
+              ", Stop Loss: ", DoubleToString(stopLoss, Digits()));
+              
+        return NormalizeDouble(stopLoss, Digits());
+    }
+    else
+    {
+        return CalculateDynamicStopLoss(isBuy, entryPrice);
     }
 }
 
@@ -417,7 +490,7 @@ double CalculateDynamicStopLoss(bool isBuy, double entryPrice)
     double stopDistance = range * RangeMultiplier;
     
     // Print range and stop distance information
-    Print("Range calculation - Period: ", RangePeriodMinutes, " minutes, ",
+    Print("Dynamic Range calculation - Period: ", RangePeriodMinutes, " minutes, ",
           "High: ", DoubleToString(highestHigh, Digits()), 
           ", Low: ", DoubleToString(lowestLow, Digits()),
           ", Range: ", DoubleToString(range, Digits()),
@@ -431,7 +504,7 @@ double CalculateDynamicStopLoss(bool isBuy, double entryPrice)
     else
         stopLoss = entryPrice + stopDistance;
     
-    Print("Stop Loss calculated - Entry: ", DoubleToString(entryPrice, Digits()),
+    Print("Dynamic Stop Loss calculated - Entry: ", DoubleToString(entryPrice, Digits()),
           ", Direction: ", (isBuy ? "BUY" : "SELL"),
           ", Stop Loss: ", DoubleToString(stopLoss, Digits()));
     
@@ -455,4 +528,26 @@ bool ParseTimeString(string timeStr, int &hour, int &minute)
         return false;
     
     return true;
+}
+
+//+------------------------------------------------------------------+
+//| Determine trade direction based on input mode                   |
+//+------------------------------------------------------------------+
+bool DetermineTradeDirection()
+{
+    switch(TradeDirection)
+    {
+        case TRADE_RANDOM:
+            return (MathRand() % 2 == 0); // Random 50/50
+            
+        case TRADE_BUY_ONLY:
+            return true; // Always buy
+            
+        case TRADE_SELL_ONLY:
+            return false; // Always sell
+            
+        default:
+            Print("Warning: Invalid trade direction mode, defaulting to random");
+            return (MathRand() % 2 == 0);
+    }
 }
