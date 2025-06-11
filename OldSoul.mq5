@@ -9,17 +9,28 @@
 
 #include <Trade\Trade.mqh>
 
+// Trade direction enumeration
+enum ENUM_TRADE_DIRECTION
+{
+    TRADE_RANDOM = 0,    // Random direction (50/50)
+    TRADE_BUY_ONLY = 1,  // Buy only
+    TRADE_SELL_ONLY = 2  // Sell only
+};
+
 //--- Input parameters
 input string    StartTime = "06:00";           // Daily trading start time (HH:MM)
 input string    EndTime = "18:00";             // Daily trading end time (HH:MM)
-input int       Interval = 15;                 // Market check frequency in minutes
+input int       DailyTrades = 3;              // Number of trades per day
 input double    PositionSize = 0.01;            // Fixed lot size
+input ENUM_TRADE_DIRECTION TradeDirection = TRADE_RANDOM; // Trade direction mode
 input bool      ExitMode = true;               // Exit mode (true = exit on profit, false = exit on loss)
-input int       MinProfitLossPips = 6;        // Minimum profit/loss pips threshold
+input int       MinProfitLossPoints = 6;       // Minimum profit/loss points threshold
 
 //--- Global variables
 CTrade trade;
-datetime lastCheckTime = 0;
+datetime tradingTimes[];                       // Array to store randomized trading times
+int currentTradeIndex = 0;                     // Index of next trade to execute
+datetime lastTradeDate = 0;                   // Last date when trades were generated
 int startHour, startMinute, endHour, endMinute;
 
 //+------------------------------------------------------------------+
@@ -34,11 +45,10 @@ int OnInit()
         Print("Error: Invalid time format. Use HH:MM format.");
         return INIT_PARAMETERS_INCORRECT;
     }
-    
-    // Validate inputs
-    if(Interval <= 0)
+      // Validate inputs
+    if(DailyTrades <= 0 || DailyTrades > 100)
     {
-        Print("Error: Interval must be greater than 0");
+        Print("Error: Daily trades must be between 1 and 100");
         return INIT_PARAMETERS_INCORRECT;
     }
     
@@ -47,10 +57,9 @@ int OnInit()
         Print("Error: Position size must be greater than 0");
         return INIT_PARAMETERS_INCORRECT;
     }
-    
-    if(MinProfitLossPips <= 0)
+      if(MinProfitLossPoints <= 0)
     {
-        Print("Error: Minimum profit/loss pips must be greater than 0");
+        Print("Error: Minimum profit/loss points must be greater than 0");
         return INIT_PARAMETERS_INCORRECT;
     }
 
@@ -63,13 +72,15 @@ int OnInit()
         MathSrand(GetTickCount());
     }
     
-    
-    Print("RandomDirectionEA initialized successfully");
+    // Resize the trading times array
+    ArrayResize(tradingTimes, DailyTrades);
+      Print("RandomDirectionEA initialized successfully");
     Print("Trading hours: ", StartTime, " - ", EndTime);
-    Print("Interval: ", Interval, " minutes");
-    Print("Position size: ", PositionSize, " lots");
+    Print("Daily trades: ", DailyTrades);
+    Print("Position size: ", PositionSize, " lots");    Print("Trade direction: ", (TradeDirection == TRADE_RANDOM ? "Random" : 
+                                TradeDirection == TRADE_BUY_ONLY ? "Buy Only" : "Sell Only"));
     Print("Exit mode: ", (ExitMode ? "Exit on Profit" : "Exit on Loss"));
-    Print("Min profit/loss pips: ", MinProfitLossPips);
+    Print("Min profit/loss points: ", MinProfitLossPoints);
     
     return INIT_SUCCEEDED;
 }
@@ -87,39 +98,168 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-    // Check if it's time for market analysis
-    if(!IsTimeForCheck())
-        return;
+    // Check if we need to generate new trading times for today
+    GenerateDailyTradingTimes();
     
-    // Check if we're within trading hours
-    if(!IsWithinTradingHours())
-        return;
-    
-    // Process existing positions
-    bool canTakeNewPosition = ProcessExistingPositions();
-    
-    // Take new position if allowed
-    if(canTakeNewPosition)
-        TakeNewPosition();
-    
-    // Update last check time
-    lastCheckTime = TimeCurrent();
+    // Check if it's time to execute a trade (includes position closing checks)
+    CheckAndExecuteTrade();
 }
 
 //+------------------------------------------------------------------+
-//| Check if it's time for market analysis                          |
+//| Generate random trading times for the current day               |
 //+------------------------------------------------------------------+
-bool IsTimeForCheck()
+void GenerateDailyTradingTimes()
+{
+    MqlDateTime dt;
+    TimeToStruct(TimeCurrent(), dt);
+    
+    // Create date without time
+    datetime currentDate = StringToTime(IntegerToString(dt.year) + "." + 
+                                       IntegerToString(dt.mon) + "." + 
+                                       IntegerToString(dt.day) + " 00:00");
+    
+    // Check if we need to generate new times for today
+    if(currentDate != lastTradeDate)
+    {
+        lastTradeDate = currentDate;
+        currentTradeIndex = 0;
+        
+        // Calculate trading window in minutes
+        int startMinutes = startHour * 60 + startMinute;
+        int endMinutes = endHour * 60 + endMinute;
+        
+        // Handle overnight sessions
+        int tradingWindowMinutes;
+        if(startMinutes > endMinutes)
+        {
+            tradingWindowMinutes = (24 * 60 - startMinutes) + endMinutes;
+        }
+        else
+        {
+            tradingWindowMinutes = endMinutes - startMinutes;
+        }
+        
+        // Generate random times within the trading window
+        int usedTimes[];
+        ArrayResize(usedTimes, DailyTrades);
+        
+        for(int i = 0; i < DailyTrades; i++)
+        {
+            int randomMinute = 0;  // Initialize the variable
+            bool isUnique = false;
+            
+            // Ensure unique times
+            while(!isUnique)
+            {
+                randomMinute = MathRand() % tradingWindowMinutes;
+                isUnique = true;
+                
+                // Check if this minute is already used
+                for(int j = 0; j < i; j++)
+                {
+                    if(MathAbs(usedTimes[j] - randomMinute) < 10) // 10 minute minimum gap
+                    {
+                        isUnique = false;
+                        break;
+                    }
+                }
+            }
+            
+            usedTimes[i] = randomMinute;
+            
+            // Convert to actual time
+            int actualMinutes = startMinutes + randomMinute;
+            
+            // Handle day overflow for overnight sessions
+            datetime tradeDate = currentDate;
+            if(actualMinutes >= 24 * 60)
+            {
+                actualMinutes -= 24 * 60;
+                tradeDate += 24 * 3600; // Add one day
+            }
+            
+            int tradeHour = actualMinutes / 60;
+            int tradeMinute = actualMinutes % 60;
+            
+            tradingTimes[i] = tradeDate + tradeHour * 3600 + tradeMinute * 60;
+        }
+        
+        // Sort the trading times
+        ArraySort(tradingTimes);
+        
+        Print("Generated ", DailyTrades, " random trading times for ", TimeToString(currentDate, TIME_DATE));
+        for(int i = 0; i < DailyTrades; i++)
+        {
+            Print("Trade ", i+1, " scheduled at: ", TimeToString(tradingTimes[i], TIME_MINUTES));
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check if it's time to execute a trade or close positions        |
+//+------------------------------------------------------------------+
+void CheckAndExecuteTrade()
 {
     datetime currentTime = TimeCurrent();
     
-    // First run
-    if(lastCheckTime == 0)
-        return true;
+    // Check if we're within trading hours for any action
+    if(!IsWithinTradingHours())
+        return;
     
-    // Check if interval minutes have passed
-    int timeDiff = (int)(currentTime - lastCheckTime) / 60;
-    return (timeDiff >= Interval);
+    // Process existing positions first (check for closing at any scheduled time)
+    ProcessExistingPositions();
+    
+    // Check if we have more trades to execute today
+    if(currentTradeIndex >= DailyTrades)
+        return; // All trades for today executed    // Check if it's time for the next scheduled trade
+    if(currentTime >= tradingTimes[currentTradeIndex])
+    {        // Check if we can take a new position based on existing position criteria
+        bool canTakeNewPosition = true;
+        
+        // Find the most recent position (last executed trade)
+        datetime lastPositionTime = 0;
+        ulong lastPositionTicket = 0;
+        
+        for(int i = 0; i < PositionsTotal(); i++)
+        {
+            if(PositionGetTicket(i))
+            {
+                if(PositionGetString(POSITION_SYMBOL) == Symbol())
+                {
+                    datetime positionTime = (datetime)PositionGetInteger(POSITION_TIME);
+                    if(positionTime > lastPositionTime)
+                    {
+                        lastPositionTime = positionTime;
+                        lastPositionTicket = PositionGetTicket(i);
+                    }
+                }
+            }
+        }
+        
+        // Check only the last position if it exists
+        if(lastPositionTicket > 0)
+        {            if(PositionSelectByTicket(lastPositionTicket))
+            {
+                // Check if last position's absolute profit points is less than threshold
+                double profitPoints = GetProfitInPoints();
+                if(MathAbs(profitPoints) < MinProfitLossPoints)
+                {
+                    canTakeNewPosition = false;
+                    Print("Skipping trade - last position profit (", 
+                          DoubleToString(profitPoints, 1), " points) below threshold of ", 
+                          MinProfitLossPoints, " points at: ", TimeToString(currentTime),
+                          " | Last position opened at: ", TimeToString(lastPositionTime));
+                }
+            }
+        }
+        
+        if(canTakeNewPosition)
+        {
+            TakeNewPosition();
+        }
+        
+        currentTradeIndex++;
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -146,81 +286,88 @@ bool IsWithinTradingHours()
 }
 
 //+------------------------------------------------------------------+
-//| Process existing positions and return if new position allowed   |
+//| Process existing positions and close if criteria met at scheduled times |
 //+------------------------------------------------------------------+
-bool ProcessExistingPositions()
+void ProcessExistingPositions()
 {
-    bool canTakeNewPosition = true;
+    datetime currentTime = TimeCurrent();
+    bool isScheduledTime = false;
     
-    // Check all positions for EURUSD
+    // Check if current time matches any of the scheduled trading times
+    for(int t = 0; t < DailyTrades; t++)
+    {
+        // Allow a 1-minute window around each scheduled time for position evaluation
+        if(MathAbs(currentTime - tradingTimes[t]) <= 60)
+        {
+            isScheduledTime = true;
+            break;
+        }
+    }
+    
+    // Only process position closing at scheduled times
+    if(!isScheduledTime)
+        return;
+      // Check all positions for this symbol
     for(int i = PositionsTotal() - 1; i >= 0; i--)
     {
         if(PositionGetTicket(i))
         {
             if(PositionGetString(POSITION_SYMBOL) == Symbol())
             {
-                double profit = PositionGetDouble(POSITION_PROFIT);
-                double profitPips = GetProfitInPips();
-                
-                bool shouldClose = false;
-                  if(ExitMode) // Exit on profit
+                ulong positionTicket = PositionGetTicket(i);                if(PositionSelectByTicket(positionTicket))
                 {
-                    if(profit > 0 && profitPips >= MinProfitLossPips)
-                        shouldClose = true;
-                    else if(profit > 0 && profitPips < MinProfitLossPips)
-                        canTakeNewPosition = false; // Skip new position
-                }
-                else // Exit on loss
-                {
-                    if(profit < 0 && MathAbs(profitPips) >= MinProfitLossPips)
-                        shouldClose = true;
-                    else if(profit < 0 && MathAbs(profitPips) < MinProfitLossPips)
-                        canTakeNewPosition = false; // Skip new position
-                }
-                
-                // Additional condition: prevent new positions when profit is negative and small
-                if(profit < 0 && MathAbs(profitPips) < MinProfitLossPips)
-                    canTakeNewPosition = false;
-                
-                if(shouldClose)
-                {
-                    ulong ticket = PositionGetTicket(i);
-                    if(trade.PositionClose(ticket))
+                    double profit = PositionGetDouble(POSITION_PROFIT);
+                    double profitPoints = GetProfitInPoints();
+                    
+                    bool shouldClose = false;
+                    
+                    if(ExitMode) // Exit on profit
                     {
-                        Print("Position closed: Ticket #", ticket, 
-                              ", Profit: ", DoubleToString(profit, 2), 
-                              ", Pips: ", DoubleToString(profitPips, 1));
+                        if(profit > 0 && profitPoints >= MinProfitLossPoints)
+                            shouldClose = true;
+                    }
+                    else // Exit on loss
+                    {
+                        if(profit < 0 && MathAbs(profitPoints) >= MinProfitLossPoints)
+                            shouldClose = true;
+                    }
+                    
+                    if(shouldClose)
+                    {
+                        if(trade.PositionClose(positionTicket))
+                        {
+                            Print("Position closed at scheduled time: Ticket #", positionTicket, 
+                                  ", Profit: ", DoubleToString(profit, 2), 
+                                  ", Points: ", DoubleToString(profitPoints, 1),
+                                  ", Time: ", TimeToString(currentTime, TIME_MINUTES));
+                        }
                     }
                 }
             }
         }
     }
-    
-    return canTakeNewPosition;
 }
 
 //+------------------------------------------------------------------+
-//| Calculate profit in pips for current position                   |
+//| Calculate profit in points for currently selected position      |
 //+------------------------------------------------------------------+
-double GetProfitInPips()
+double GetProfitInPoints()
 {
     double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
     double currentPrice = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 
                          SymbolInfoDouble(Symbol(), SYMBOL_BID) : 
                          SymbolInfoDouble(Symbol(), SYMBOL_ASK);
-    
-    double pipValue = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+      double pipValue = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
     if(SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 5 || 
        SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 3)
         pipValue *= 10;
     
-    double pips = 0;
+    double points = 0;
     if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
-        pips = (currentPrice - openPrice) / pipValue;
+        points = (currentPrice - openPrice) / pipValue;
     else
-        pips = (openPrice - currentPrice) / pipValue;
-    
-    return pips;
+        points = (openPrice - currentPrice) / pipValue;
+    return points;
 }
 
 //+------------------------------------------------------------------+
@@ -228,18 +375,18 @@ double GetProfitInPips()
 //+------------------------------------------------------------------+
 void TakeNewPosition()
 {
-    bool isBuy = (MathRand() % 2 == 0);
+    bool isBuy = DetermineTradeDirection();
     
     double price = isBuy ? SymbolInfoDouble(Symbol(), SYMBOL_ASK) : 
                           SymbolInfoDouble(Symbol(), SYMBOL_BID);
     
     ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-    
-    if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, 0, 0, 
+      if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, 0, 0, 
                          "RandomDirection_" + TimeToString(TimeCurrent())))
     {
         Print("New ", (isBuy ? "BUY" : "SELL"), " position opened: ",
-              "Size: ", PositionSize, ", Price: ", DoubleToString(price, Digits()));
+              "Size: ", PositionSize, ", Price: ", DoubleToString(price, Digits()),
+              " (Trade ", currentTradeIndex, " of ", DailyTrades, ")");
     }
     else
     {
@@ -263,4 +410,26 @@ bool ParseTimeString(string timeStr, int &hour, int &minute)
         return false;
     
     return true;
+}
+
+//+------------------------------------------------------------------+
+//| Determine trade direction based on input mode                   |
+//+------------------------------------------------------------------+
+bool DetermineTradeDirection()
+{
+    switch(TradeDirection)
+    {
+        case TRADE_RANDOM:
+            return (MathRand() % 2 == 0); // Random 50/50
+            
+        case TRADE_BUY_ONLY:
+            return true; // Always buy
+            
+        case TRADE_SELL_ONLY:
+            return false; // Always sell
+            
+        default:
+            Print("Warning: Invalid trade direction mode, defaulting to random");
+            return (MathRand() % 2 == 0);
+    }
 }
