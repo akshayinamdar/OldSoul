@@ -24,7 +24,7 @@ input int       DailyTrades = 3;              // Number of trades per day
 input double    PositionSize = 0.01;            // Fixed lot size
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_RANDOM; // Trade direction mode
 input bool      ExitMode = true;               // Exit mode (true = exit on profit, false = exit on loss)
-input int       MinProfitLossPips = 6;        // Minimum profit/loss pips threshold
+input int       MinProfitLossPoints = 6;       // Minimum profit/loss points threshold
 
 //--- Global variables
 CTrade trade;
@@ -57,10 +57,9 @@ int OnInit()
         Print("Error: Position size must be greater than 0");
         return INIT_PARAMETERS_INCORRECT;
     }
-    
-    if(MinProfitLossPips <= 0)
+      if(MinProfitLossPoints <= 0)
     {
-        Print("Error: Minimum profit/loss pips must be greater than 0");
+        Print("Error: Minimum profit/loss points must be greater than 0");
         return INIT_PARAMETERS_INCORRECT;
     }
 
@@ -78,11 +77,10 @@ int OnInit()
       Print("RandomDirectionEA initialized successfully");
     Print("Trading hours: ", StartTime, " - ", EndTime);
     Print("Daily trades: ", DailyTrades);
-    Print("Position size: ", PositionSize, " lots");
-    Print("Trade direction: ", (TradeDirection == TRADE_RANDOM ? "Random" : 
+    Print("Position size: ", PositionSize, " lots");    Print("Trade direction: ", (TradeDirection == TRADE_RANDOM ? "Random" : 
                                 TradeDirection == TRADE_BUY_ONLY ? "Buy Only" : "Sell Only"));
     Print("Exit mode: ", (ExitMode ? "Exit on Profit" : "Exit on Loss"));
-    Print("Min profit/loss pips: ", MinProfitLossPips);
+    Print("Min profit/loss points: ", MinProfitLossPoints);
     
     return INIT_SUCCEEDED;
 }
@@ -240,17 +238,16 @@ void CheckAndExecuteTrade()
         
         // Check only the last position if it exists
         if(lastPositionTicket > 0)
-        {
-            if(PositionSelectByTicket(lastPositionTicket))
+        {            if(PositionSelectByTicket(lastPositionTicket))
             {
-                // Check if last position's absolute profit pips is less than threshold
-                double profitPips = GetProfitInPips();
-                if(MathAbs(profitPips) < MinProfitLossPips)
+                // Check if last position's absolute profit points is less than threshold
+                double profitPoints = GetProfitInPoints();
+                if(MathAbs(profitPoints) < MinProfitLossPoints)
                 {
                     canTakeNewPosition = false;
                     Print("Skipping trade - last position profit (", 
-                          DoubleToString(profitPips, 1), " pips) below threshold of ", 
-                          MinProfitLossPips, " pips at: ", TimeToString(currentTime),
+                          DoubleToString(profitPoints, 1), " points) below threshold of ", 
+                          MinProfitLossPoints, " points at: ", TimeToString(currentTime),
                           " | Last position opened at: ", TimeToString(lastPositionTime));
                 }
             }
@@ -317,22 +314,21 @@ void ProcessExistingPositions()
         {
             if(PositionGetString(POSITION_SYMBOL) == Symbol())
             {
-                ulong positionTicket = PositionGetTicket(i);
-                if(PositionSelectByTicket(positionTicket))
+                ulong positionTicket = PositionGetTicket(i);                if(PositionSelectByTicket(positionTicket))
                 {
                     double profit = PositionGetDouble(POSITION_PROFIT);
-                    double profitPips = GetProfitInPips();
+                    double profitPoints = GetProfitInPoints();
                     
                     bool shouldClose = false;
                     
                     if(ExitMode) // Exit on profit
                     {
-                        if(profit > 0 && profitPips >= MinProfitLossPips)
+                        if(profit > 0 && profitPoints >= MinProfitLossPoints)
                             shouldClose = true;
                     }
                     else // Exit on loss
                     {
-                        if(profit < 0 && MathAbs(profitPips) >= MinProfitLossPips)
+                        if(profit < 0 && MathAbs(profitPoints) >= MinProfitLossPoints)
                             shouldClose = true;
                     }
                     
@@ -342,7 +338,7 @@ void ProcessExistingPositions()
                         {
                             Print("Position closed at scheduled time: Ticket #", positionTicket, 
                                   ", Profit: ", DoubleToString(profit, 2), 
-                                  ", Pips: ", DoubleToString(profitPips, 1),
+                                  ", Points: ", DoubleToString(profitPoints, 1),
                                   ", Time: ", TimeToString(currentTime, TIME_MINUTES));
                         }
                     }
@@ -353,26 +349,25 @@ void ProcessExistingPositions()
 }
 
 //+------------------------------------------------------------------+
-//| Calculate profit in pips for currently selected position        |
+//| Calculate profit in points for currently selected position      |
 //+------------------------------------------------------------------+
-double GetProfitInPips()
+double GetProfitInPoints()
 {
     double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
     double currentPrice = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 
                          SymbolInfoDouble(Symbol(), SYMBOL_BID) : 
                          SymbolInfoDouble(Symbol(), SYMBOL_ASK);
-    
-    double pipValue = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+      double pipValue = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
     if(SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 5 || 
        SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 3)
         pipValue *= 10;
     
-    double pips = 0;
+    double points = 0;
     if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
-        pips = (currentPrice - openPrice) / pipValue;
+        points = (currentPrice - openPrice) / pipValue;
     else
-        pips = (openPrice - currentPrice) / pipValue;
-    return pips;
+        points = (openPrice - currentPrice) / pipValue;
+    return points;
 }
 
 //+------------------------------------------------------------------+
