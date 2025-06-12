@@ -78,11 +78,11 @@ void SendTradeNotification(string direction, double lots, double price, double s
 void SendTradeNotificationWithRange(string direction, double lots, double price, double sl, double tp, double range)
 {
     string message = Symbol() + ": New " + direction + " @ " +
+                    "Range: " + DoubleToString(range, Digits())+
                     DoubleToString(price, Digits()) + " | " +
                     DoubleToString(lots, 2) + " lots | " +
                     "SL: " + DoubleToString(sl, Digits()) + " | " +
-                    "TP: " + DoubleToString(tp, Digits()) + " | " +
-                    "Range: " + DoubleToString(range, Digits());
+                    "TP: " + DoubleToString(tp, Digits()) + " | ";
     
     SendPushAlert(message);
 }
