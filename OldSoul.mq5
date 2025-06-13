@@ -25,6 +25,8 @@ input double    PositionSize = 0.01;            // Fixed lot size
 input ENUM_TRADE_DIRECTION TradeDirection = TRADE_RANDOM; // Trade direction mode
 input bool      ExitMode = true;               // Exit mode (true = exit on profit, false = exit on loss)
 input int       MinProfitLossPoints = 6;       // Minimum profit/loss points threshold
+input double    EquityTargetPercent = 1.0;     // Target equity increase (%)
+input double    EquityTrailingPercent = 0.5;   // Equity trailing stop (%)
 
 //--- Global variables
 CTrade trade;
@@ -32,6 +34,13 @@ datetime tradingTimes[];                       // Array to store randomized trad
 int currentTradeIndex = 0;                     // Index of next trade to execute
 datetime lastTradeDate = 0;                   // Last date when trades were generated
 int startHour, startMinute, endHour, endMinute;
+
+//--- Equity Protection Variables
+double initialEquity = 0;           // Starting equity value
+double highestEquity = 0;           // Highest equity reached
+bool protectionActivated = false;   // Flag for if protection has triggered
+bool protectionTriggered = false;   // Flag to prevent new trades when protection just triggered
+datetime protectionDate = 0;        // Date when protection was triggered (to block trading for rest of day)
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -56,10 +65,21 @@ int OnInit()
     {
         Print("Error: Position size must be greater than 0");
         return INIT_PARAMETERS_INCORRECT;
-    }
-      if(MinProfitLossPoints <= 0)
+    }    if(MinProfitLossPoints <= 0)
     {
         Print("Error: Minimum profit/loss points must be greater than 0");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+    
+    if(EquityTargetPercent <= 0)
+    {
+        Print("Error: Equity target percent must be greater than 0");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+    
+    if(EquityTrailingPercent <= 0 || EquityTrailingPercent >= 100)
+    {
+        Print("Error: Equity trailing percent must be between 0 and 100");
         return INIT_PARAMETERS_INCORRECT;
     }
 
@@ -71,9 +91,13 @@ int OnInit()
         // Live trading seed
         MathSrand(GetTickCount());
     }
-    
-    // Resize the trading times array
-    ArrayResize(tradingTimes, DailyTrades);
+      // Resize the trading times array
+    ArrayResize(tradingTimes, DailyTrades);    // Initialize equity protection values
+    initialEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+    highestEquity = initialEquity;
+    protectionActivated = false;
+    protectionTriggered = false;
+    protectionDate = 0;
       Print("RandomDirectionEA initialized successfully");
     Print("Trading hours: ", StartTime, " - ", EndTime);
     Print("Daily trades: ", DailyTrades);
@@ -81,6 +105,8 @@ int OnInit()
                                 TradeDirection == TRADE_BUY_ONLY ? "Buy Only" : "Sell Only"));
     Print("Exit mode: ", (ExitMode ? "Exit on Profit" : "Exit on Loss"));
     Print("Min profit/loss points: ", MinProfitLossPoints);
+    Print("Equity protection: Target +", EquityTargetPercent, "%, Trailing ", EquityTrailingPercent, "%");
+    Print("Initial equity: ", DoubleToString(initialEquity, 2));
     
     return INIT_SUCCEEDED;
 }
@@ -98,6 +124,9 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+    // Check equity protection first
+    CheckEquityProtection();
+    
     // Check if we need to generate new trading times for today
     GenerateDailyTradingTimes();
     
@@ -201,6 +230,32 @@ void GenerateDailyTradingTimes()
 void CheckAndExecuteTrade()
 {
     datetime currentTime = TimeCurrent();
+    
+    // Skip all trading if equity protection was just triggered
+    if(protectionTriggered)
+        return;
+    
+    // Skip trading for rest of day if protection was triggered today
+    if(protectionDate > 0)
+    {
+        MqlDateTime currentDT, protectionDT;
+        TimeToStruct(currentTime, currentDT);
+        TimeToStruct(protectionDate, protectionDT);
+        
+        // If same date, skip trading
+        if(currentDT.year == protectionDT.year && 
+           currentDT.mon == protectionDT.mon && 
+           currentDT.day == protectionDT.day)
+        {
+            return;
+        }
+        else
+        {
+            // New day - reset protection
+            protectionDate = 0;
+            Print("New trading day - equity protection reset");
+        }
+    }
     
     // Check if we're within trading hours for any action
     if(!IsWithinTradingHours())
@@ -349,6 +404,131 @@ void ProcessExistingPositions()
 }
 
 //+------------------------------------------------------------------+
+//| Check and manage equity protection                               |
+//+------------------------------------------------------------------+
+void CheckEquityProtection()
+{
+    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+    
+    // Update highest equity if we have a new high
+    if(currentEquity > highestEquity)
+    {
+        double previousHighest = highestEquity;
+        highestEquity = currentEquity;
+        
+        // Log new equity high with protection details
+        if(protectionActivated)
+        {
+            // Calculate trailing based on gain amount
+            double gainAmount = highestEquity - initialEquity;
+            double trailingAmount = gainAmount * (EquityTrailingPercent / 100.0);
+            double closeLevel = highestEquity - trailingAmount;
+            
+            Print("NEW EQUITY HIGH: ", DoubleToString(highestEquity, 2), 
+                  " (Previous: ", DoubleToString(previousHighest, 2), ")",
+                  " | Gain: ", DoubleToString(gainAmount, 2),
+                  " | Protection Level: ", DoubleToString(closeLevel, 2),
+                  " | Trailing: ", DoubleToString(EquityTrailingPercent, 2), "% of gain");
+        }
+    }
+    
+    // Calculate percent gain from initial equity
+    double equityGainPercent = (currentEquity - initialEquity) / initialEquity * 100.0;
+    
+    // Check if we've reached target but haven't activated protection
+    if(!protectionActivated && equityGainPercent >= EquityTargetPercent)
+    {
+        // Activate protection
+        protectionActivated = true;
+        
+        // Calculate trailing based on gain amount
+        double gainAmount = highestEquity - initialEquity;
+        double trailingAmount = gainAmount * (EquityTrailingPercent / 100.0);
+        double closeLevel = highestEquity - trailingAmount;
+        
+        Print("Equity protection activated! Current equity: ", 
+              DoubleToString(currentEquity, 2), 
+              " (+", DoubleToString(equityGainPercent, 2), "%)",
+              " | Gain amount: ", DoubleToString(gainAmount, 2),
+              " | Positions will close if equity drops to: ", DoubleToString(closeLevel, 2),
+              " (", DoubleToString(EquityTrailingPercent, 2), "% of gain)");
+    }
+    
+    // Check trailing stop if protection is activated
+    if(protectionActivated)
+    {
+        // Calculate trailing based on gain amount from highest equity
+        double gainAmount = highestEquity - initialEquity;
+        double trailingAmount = gainAmount * (EquityTrailingPercent / 100.0);
+        double closeLevel = highestEquity - trailingAmount;
+        
+        // Close positions if we drop below the calculated level
+        if(currentEquity <= closeLevel)
+        {
+            Print("Equity trailing stop triggered!");
+            Print("Initial equity: ", DoubleToString(initialEquity, 2));
+            Print("Highest equity: ", DoubleToString(highestEquity, 2));
+            Print("Current equity: ", DoubleToString(currentEquity, 2));
+            Print("Gain amount: ", DoubleToString(gainAmount, 2));
+            Print("Trailing amount (", DoubleToString(EquityTrailingPercent, 2), "% of gain): ", DoubleToString(trailingAmount, 2));
+            Print("Close level: ", DoubleToString(closeLevel, 2));
+                  
+            CloseAllPositions();
+            
+            // Set flag to prevent new trades and mark date
+            protectionTriggered = true;
+            protectionDate = TimeCurrent();
+            
+            Print("Trading suspended for remainder of day: ", TimeToString(protectionDate, TIME_DATE));
+            
+            // Reset protection after positions are closed
+            highestEquity = currentEquity;
+            protectionActivated = false;
+        }
+    }
+    
+    // Reset protection trigger flag if no positions exist
+    if(protectionTriggered && PositionsTotal() == 0)
+    {
+        protectionTriggered = false;
+        initialEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+        highestEquity = initialEquity;
+        protectionActivated = false;
+        protectionTriggered = false;
+        Print("Protection trigger flag reset - trading suspended until next day");
+    }
+}
+
+
+//+------------------------------------------------------------------+
+//| Close all positions for current symbol                           |
+//+------------------------------------------------------------------+
+void CloseAllPositions()
+{
+    Print("Closing all positions due to equity protection...");
+    
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        if(PositionGetTicket(i))
+        {
+            if(PositionGetString(POSITION_SYMBOL) == Symbol())
+            {
+                ulong positionTicket = PositionGetTicket(i);
+                if(trade.PositionClose(positionTicket))
+                {
+                    Print("Position #", positionTicket, " closed by equity protection");
+                }
+                else
+                {
+                    Print("Failed to close position #", positionTicket, 
+                          ". Error: ", trade.ResultRetcode());
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
 //| Calculate profit in points for currently selected position      |
 //+------------------------------------------------------------------+
 double GetProfitInPoints()
@@ -357,16 +537,15 @@ double GetProfitInPoints()
     double currentPrice = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 
                          SymbolInfoDouble(Symbol(), SYMBOL_BID) : 
                          SymbolInfoDouble(Symbol(), SYMBOL_ASK);
-      double pipValue = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-    if(SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 5 || 
-       SymbolInfoInteger(Symbol(), SYMBOL_DIGITS) == 3)
-        pipValue *= 10;
+    
+    // Get the raw point value (without pip conversion)
+    double pointValue = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
     
     double points = 0;
     if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
-        points = (currentPrice - openPrice) / pipValue;
+        points = (currentPrice - openPrice) / pointValue;
     else
-        points = (openPrice - currentPrice) / pipValue;
+        points = (openPrice - currentPrice) / pointValue;
     return points;
 }
 
