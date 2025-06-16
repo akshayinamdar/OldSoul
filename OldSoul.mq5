@@ -27,6 +27,7 @@ input bool      ExitMode = true;               // Exit mode (true = exit on prof
 input int       MinProfitLossPoints = 6;       // Minimum profit/loss points threshold
 input double    EquityTargetPercent = 1.0;     // Target equity increase (%)
 input double    EquityTrailingPercent = 0.5;   // Equity trailing stop (%)
+input int       MaxPositionsPerDay = 5;        // Maximum positions per day (0 = unlimited)
 
 //--- Global variables
 CTrade trade;
@@ -34,6 +35,7 @@ datetime tradingTimes[];                       // Array to store randomized trad
 int currentTradeIndex = 0;                     // Index of next trade to execute
 datetime lastTradeDate = 0;                   // Last date when trades were generated
 int startHour, startMinute, endHour, endMinute;
+int dailyPositionCount = 0;                   // Counter for positions opened today
 
 //--- Equity Protection Variables
 double initialEquity = 0;           // Starting equity value
@@ -61,6 +63,12 @@ int OnInit()
         return INIT_PARAMETERS_INCORRECT;
     }
     
+    if(MaxPositionsPerDay < 0 || MaxPositionsPerDay > 100)
+    {
+        Print("Error: Max positions per day must be between 0 and 100 (0 = unlimited)");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+
     if(PositionSize <= 0)
     {
         Print("Error: Position size must be greater than 0");
@@ -98,6 +106,7 @@ int OnInit()
     protectionActivated = false;
     protectionTriggered = false;
     protectionDate = 0;
+    dailyPositionCount = 0;  // Initialize daily position counter
       Print("RandomDirectionEA initialized successfully");
     Print("Trading hours: ", StartTime, " - ", EndTime);
     Print("Daily trades: ", DailyTrades);
@@ -107,7 +116,8 @@ int OnInit()
     Print("Min profit/loss points: ", MinProfitLossPoints);
     Print("Equity protection: Target +", EquityTargetPercent, "%, Trailing ", EquityTrailingPercent, "%");
     Print("Initial equity: ", DoubleToString(initialEquity, 2));
-    
+    Print("Max positions per day: ", (MaxPositionsPerDay == 0 ? "Unlimited" : IntegerToString(MaxPositionsPerDay)));
+
     return INIT_SUCCEEDED;
 }
 
@@ -146,12 +156,12 @@ void GenerateDailyTradingTimes()
     datetime currentDate = StringToTime(IntegerToString(dt.year) + "." + 
                                        IntegerToString(dt.mon) + "." + 
                                        IntegerToString(dt.day) + " 00:00");
-    
-    // Check if we need to generate new times for today
+      // Check if we need to generate new times for today
     if(currentDate != lastTradeDate)
     {
         lastTradeDate = currentDate;
         currentTradeIndex = 0;
+        dailyPositionCount = 0;  // Reset daily position counter for new day
         
         // Calculate trading window in minutes
         int startMinutes = startHour * 60 + startMinute;
@@ -248,12 +258,12 @@ void CheckAndExecuteTrade()
            currentDT.day == protectionDT.day)
         {
             return;
-        }
-        else
+        }        else
         {
-            // New day - reset protection
+            // New day - reset protection and daily counters
             protectionDate = 0;
-            Print("New trading day - equity protection reset");
+            dailyPositionCount = 0;
+            Print("New trading day - equity protection reset, daily position counter reset");
         }
     }
     
@@ -263,10 +273,16 @@ void CheckAndExecuteTrade()
     
     // Process existing positions first (check for closing at any scheduled time)
     ProcessExistingPositions();
-    
-    // Check if we have more trades to execute today
+      // Check if we have more trades to execute today
     if(currentTradeIndex >= DailyTrades)
-        return; // All trades for today executed    // Check if it's time for the next scheduled trade
+        return; // All trades for today executed
+    
+    // Check if we've reached max positions per day (if limit is set)
+    if(MaxPositionsPerDay > 0 && dailyPositionCount >= MaxPositionsPerDay)
+    {
+        Print("Daily position limit reached: ", dailyPositionCount, " of ", MaxPositionsPerDay, " positions");
+        return;
+    }// Check if it's time for the next scheduled trade
     if(currentTime >= tradingTimes[currentTradeIndex])
     {        // Check if we can take a new position based on existing position criteria
         bool canTakeNewPosition = true;
@@ -559,13 +575,15 @@ void TakeNewPosition()
     double price = isBuy ? SymbolInfoDouble(Symbol(), SYMBOL_ASK) : 
                           SymbolInfoDouble(Symbol(), SYMBOL_BID);
     
-    ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, 0, 0, 
+    ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;      if(trade.PositionOpen(Symbol(), orderType, PositionSize, price, 0, 0, 
                          "RandomDirection_" + TimeToString(TimeCurrent())))
     {
+        dailyPositionCount++; // Increment daily position counter
         Print("New ", (isBuy ? "BUY" : "SELL"), " position opened: ",
               "Size: ", PositionSize, ", Price: ", DoubleToString(price, Digits()),
-              " (Trade ", currentTradeIndex, " of ", DailyTrades, ")");
+              " (Trade ", currentTradeIndex, " of ", DailyTrades, 
+              ", Daily positions: ", dailyPositionCount, 
+              (MaxPositionsPerDay > 0 ? "/" + IntegerToString(MaxPositionsPerDay) : ""), ")");
     }
     else
     {
